@@ -119,9 +119,35 @@ func TestParse_EmptyInput(t *testing.T) {
 	}
 }
 
+// TestParse_NonNumeric pins which error non-digit input produces. It used to
+// assert only that *some* error came back, which hid the fact that
+// onlyDigits collapsed a rejected rune into an empty string and made Parse
+// answer ErrEmptyInput for input that was neither empty nor ambiguous.
 func TestParse_NonNumeric(t *testing.T) {
-	if _, err := Parse("ABCD567890123456789012345678901234567890123X"); err == nil {
-		t.Error("expected an error for non-numeric input")
+	cases := map[string]string{
+		"letters at both ends": "ABCD567890123456789012345678901234567890123X",
+		"embedded letter":      "2379516000000015075000000001234567890123456A",
+		"stray punctuation":    "23795160000000150750000000012345678901234567!",
+		"slash separator":      "23795/16000000150750000000012345678901234567",
+		"tab":                  "23795160000000150750000000012345678901234567\t",
+	}
+	for name, input := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Parse(input); !errors.Is(err, ErrNonNumeric) {
+				t.Errorf("Parse(%q) error = %v, want ErrNonNumeric", input, err)
+			}
+		})
+	}
+}
+
+// TestParse_SeparatorsOnlyIsEmpty keeps the ErrNonNumeric fix from swallowing
+// ErrEmptyInput: an input made only of the separators Parse is allowed to
+// strip really does reduce to nothing, and must still say so.
+func TestParse_SeparatorsOnlyIsEmpty(t *testing.T) {
+	for _, input := range []string{"", "   ", "...", "- . -", "  --.. "} {
+		if _, err := Parse(input); !errors.Is(err, ErrEmptyInput) {
+			t.Errorf("Parse(%q) error = %v, want ErrEmptyInput", input, err)
+		}
 	}
 }
 
@@ -217,18 +243,15 @@ func buildCollectionBarcode(t *testing.T, valueType byte, amountCents int64, fre
 	return barcode
 }
 
-// collectionDigitableLine renders a collection barcode as its 48-digit
-// linha digitável: four 11-digit slices, each followed by its own check
-// digit under the rule the barcode's value-type digit selects.
-func collectionDigitableLine(t *testing.T, barcode string) string {
+// mustCollectionDigitableLine renders a collection barcode as its 48-digit
+// linha digitável. It delegates to the exported builder rather than keeping
+// a second copy of the layout, so the round-trip tests below exercise the
+// real encoder against the real decoder.
+func mustCollectionDigitableLine(t *testing.T, barcode string) string {
 	t.Helper()
-	checkDigit, ok := collectionCheckDigit(barcode[2])
-	if !ok {
-		t.Fatalf("bad test input: value type %q is not a supported variant", barcode[2])
-	}
-	line := ""
-	for _, f := range [4]string{barcode[0:11], barcode[11:22], barcode[22:33], barcode[33:44]} {
-		line += f + string(checkDigit(f))
+	line, err := collectionDigitableLine(barcode)
+	if err != nil {
+		t.Fatalf("collectionDigitableLine(%q) error = %v", barcode, err)
 	}
 	if len(line) != 48 {
 		t.Fatalf("built a %d-digit linha digitável, want 48", len(line))
@@ -287,7 +310,7 @@ func TestParse_Collection_UnsupportedValueTypes(t *testing.T) {
 
 func TestParse_RoundTrip_UtilityBill_DigitableLine(t *testing.T) {
 	barcode := buildUtilityBillBarcode(t, 1000, "10000000000000000000000000000")
-	digitable := collectionDigitableLine(t, barcode)
+	digitable := mustCollectionDigitableLine(t, barcode)
 
 	b, err := Parse(digitable)
 	if err != nil {
@@ -388,7 +411,7 @@ func TestParse_Collection_Mod11_RoundTrip(t *testing.T) {
 		t.Errorf("AmountCents = %d, want 4599", b.AmountCents)
 	}
 
-	line := collectionDigitableLine(t, barcode)
+	line := mustCollectionDigitableLine(t, barcode)
 	fromLine, err := Parse(line)
 	if err != nil {
 		t.Fatalf("Parse(linha digitável) error = %v", err)
@@ -424,7 +447,7 @@ func TestParse_Collection_Mod11_TamperedCheckDigits(t *testing.T) {
 // módulo 10, and must be rejected when checked against módulo 11 digits.
 func TestParse_Collection_Mod10_StillUsesMod10(t *testing.T) {
 	barcode := buildCollectionBarcode(t, '6', 7500, "12345678901234567890123456789")
-	line := collectionDigitableLine(t, barcode)
+	line := mustCollectionDigitableLine(t, barcode)
 
 	b, err := Parse(line)
 	if err != nil {

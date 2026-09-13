@@ -40,7 +40,7 @@ func digitableLineToBarcode47(input string) (string, error) {
 //
 // That check digit follows módulo 10 or módulo 11 according to the
 // document's value-type digit, the same digit that selects the rule for the
-// barcode's own general digit see collectionCheckDigit. The rule is read
+// barcode's own general digit. See collectionCheckDigit. The rule is read
 // once, up front, and applied to all four fields: they are four slices of
 // one document, never a mix.
 func digitableLineToBarcode48(input string) (string, error) {
@@ -69,4 +69,70 @@ func digitableLineToBarcode48(input string) (string, error) {
 		barcode = append(barcode, data...)
 	}
 	return string(barcode), nil
+}
+
+// DigitableLine renders a document as the linha digitável printed on it: 47
+// digits for a bank slip, 48 for a collection document. It is the inverse of
+// the two converters above, and completes the round trip in the direction
+// Parse does not cover.
+//
+// input may be a 44-digit barcode or an existing linha digitável; it is run
+// through Parse first, so the result is only ever produced for a document
+// whose check digits already verify. The output carries no '.' or ' '
+// separators: those belong to how a document is typeset, not to its value.
+func DigitableLine(input string) (string, error) {
+	b, err := Parse(input)
+	if err != nil {
+		return "", err
+	}
+	return b.DigitableLine()
+}
+
+// DigitableLine renders an already-parsed Boleto as its linha digitável.
+// A Boleto only ever exists having passed Parse, so the barcode it carries
+// is known-valid and the field check digits are computed, never re-verified.
+func (b *Boleto) DigitableLine() (string, error) {
+	if len(b.Barcode) != 44 {
+		return "", ErrInvalidLength
+	}
+	if b.Kind == KindUtilityBill {
+		return collectionDigitableLine(b.Barcode)
+	}
+	return bankSlipDigitableLine(b.Barcode), nil
+}
+
+// bankSlipDigitableLine lays a 44-digit bank slip barcode out as the 47
+// digits of its linha digitável, mirroring digitableLineToBarcode47's field
+// map in reverse: three mod10-checked fields, then the barcode's own general
+// check digit, then the fator de vencimento and valor verbatim.
+func bankSlipDigitableLine(barcode string) string {
+	data1 := barcode[0:4] + barcode[19:24] // bank + currency + free field head
+	data2 := barcode[24:34]
+	data3 := barcode[34:44]
+
+	return data1 + string(mod10(data1)) +
+		data2 + string(mod10(data2)) +
+		data3 + string(mod10(data3)) +
+		barcode[4:5] + // general check digit
+		barcode[5:19] // fator de vencimento + valor
+}
+
+// collectionDigitableLine lays a 44-digit collection barcode out as the 48
+// digits of its linha digitável: four 11-digit slices, each followed by its
+// own check digit under the rule the document's value-type digit selects.
+// The rule is read once and applied to all four, exactly as
+// digitableLineToBarcode48 verifies them.
+func collectionDigitableLine(barcode string) (string, error) {
+	checkDigit, ok := collectionCheckDigit(barcode[2])
+	if !ok {
+		return "", ErrUnsupportedUtilityBillVariant
+	}
+
+	line := make([]byte, 0, 48)
+	for i := 0; i < 44; i += 11 {
+		field := barcode[i : i+11]
+		line = append(line, field...)
+		line = append(line, checkDigit(field))
+	}
+	return string(line), nil
 }
