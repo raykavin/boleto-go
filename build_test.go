@@ -1,6 +1,8 @@
 package boleto
 
 import (
+	"errors"
+	"math"
 	"testing"
 	"time"
 )
@@ -144,5 +146,163 @@ func TestDecodeDueDateFactor_KnownValues(t *testing.T) {
 	wrongLegacyInterpretation := dueDateEpoch.AddDate(0, 0, factor)
 	if got.Equal(wrongLegacyInterpretation) {
 		t.Errorf("decodeDueDateFactor(%d) incorrectly matches the old, unpatched 1997-epoch interpretation %v", factor, wrongLegacyInterpretation)
+	}
+}
+
+// TestBuildBankSlipBarcode_AmountOutOfRange covers the guard that replaced a
+// silent corruption: a negative amount used to emit a '-' into the barcode,
+// and an amount wider than the 10-digit value field used to emit a 45-digit
+// string. Both produced something that was not a barcode, and neither was
+// reported.
+func TestBuildBankSlipBarcode_AmountOutOfRange(t *testing.T) {
+	const freeField = "0000000012345678901234567"
+	for name, amount := range map[string]int64{
+		"negative":      -5,
+		"negative one":  -1,
+		"one over max":  maxBankSlipAmountCents + 1,
+		"eleven digits": 99999999999,
+		"max int64":     math.MaxInt64,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := BuildBankSlipBarcode("237", nil, amount, freeField); !errors.Is(err, ErrAmountOutOfRange) {
+				t.Errorf("BuildBankSlipBarcode(amount=%d) error = %v, want ErrAmountOutOfRange", amount, err)
+			}
+		})
+	}
+}
+
+// TestBuildBankSlipBarcode_AmountBoundaries proves the guard rejects only
+// what overflows the field: zero and the widest value it holds must still
+// build, and must survive a round trip.
+func TestBuildBankSlipBarcode_AmountBoundaries(t *testing.T) {
+	const freeField = "0000000012345678901234567"
+	for _, amount := range []int64{0, 1, maxBankSlipAmountCents} {
+		barcode, err := BuildBankSlipBarcode("237", nil, amount, freeField)
+		if err != nil {
+			t.Fatalf("BuildBankSlipBarcode(amount=%d) error = %v", amount, err)
+		}
+		if len(barcode) != 44 {
+			t.Errorf("amount %d produced a %d-digit barcode, want 44", amount, len(barcode))
+		}
+		b, err := Parse(barcode)
+		if err != nil {
+			t.Fatalf("Parse of a freshly built barcode error = %v", err)
+		}
+		if b.AmountCents != amount {
+			t.Errorf("AmountCents = %d, want %d", b.AmountCents, amount)
+		}
+	}
+}
+
+// TestBuildUtilityBillBarcode_RoundTrip exercises the collection builder
+// through both supported check digit rules, in both the barcode and linha
+// digitável forms.
+func TestBuildUtilityBillBarcode_RoundTrip(t *testing.T) {
+	const freeField = "12345678901234567890123456789"
+	for _, valueType := range []byte{'6', '8'} {
+		t.Run(string(valueType), func(t *testing.T) {
+			barcode, err := BuildUtilityBillBarcode('3', valueType, 4599, freeField)
+			if err != nil {
+				t.Fatalf("BuildUtilityBillBarcode error = %v", err)
+			}
+			if len(barcode) != 44 {
+				t.Fatalf("built a %d-digit barcode, want 44", len(barcode))
+			}
+			if barcode[0] != '8' || barcode[1] != '3' || barcode[2] != valueType {
+				t.Errorf("head = %q, want 83%c", barcode[0:3], valueType)
+			}
+
+			b, err := Parse(barcode)
+			if err != nil {
+				t.Fatalf("Parse of a freshly built collection barcode error = %v", err)
+			}
+			if b.Kind != KindUtilityBill {
+				t.Errorf("Kind = %v, want KindUtilityBill", b.Kind)
+			}
+			if b.AmountCents != 4599 {
+				t.Errorf("AmountCents = %d, want 4599", b.AmountCents)
+			}
+			if b.DueDate != nil {
+				t.Errorf("DueDate = %v, want nil", b.DueDate)
+			}
+			if b.BankCode != "" {
+				t.Errorf("BankCode = %q, want empty", b.BankCode)
+			}
+			if b.FreeField != freeField {
+				t.Errorf("FreeField = %q, want %q", b.FreeField, freeField)
+			}
+
+			line := mustCollectionDigitableLine(t, barcode)
+			fromLine, err := Parse(line)
+			if err != nil {
+				t.Fatalf("Parse(linha digitável) error = %v", err)
+			}
+			if fromLine.Barcode != barcode {
+				t.Errorf("recovered barcode = %s, want %s", fromLine.Barcode, barcode)
+			}
+		})
+	}
+}
+
+func TestBuildUtilityBillBarcode_InvalidInputs(t *testing.T) {
+	const freeField = "12345678901234567890123456789"
+	cases := []struct {
+		name      string
+		segment   byte
+		valueType byte
+		amount    int64
+		freeField string
+		want      error
+	}{
+		{"segment zero", '0', '6', 100, freeField, ErrInvalidSegment},
+		{"segment non-digit", 'A', '6', 100, freeField, ErrInvalidSegment},
+		{"quantidade de moeda mod10", '3', '7', 100, freeField, ErrUnsupportedUtilityBillVariant},
+		{"quantidade de moeda mod11", '3', '9', 100, freeField, ErrUnsupportedUtilityBillVariant},
+		{"value type off table", '3', '0', 100, freeField, ErrUnsupportedUtilityBillVariant},
+		{"free field too short", '3', '6', 100, "1234567890123456789012345", ErrInvalidFreeField},
+		{"free field non-numeric", '3', '6', 100, "1234567890123456789012345678A", ErrNonNumeric},
+		{"negative amount", '3', '6', -1, freeField, ErrAmountOutOfRange},
+		{"amount over field", '3', '6', maxUtilityBillAmountCents + 1, freeField, ErrAmountOutOfRange},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := BuildUtilityBillBarcode(tc.segment, tc.valueType, tc.amount, tc.freeField); !errors.Is(err, tc.want) {
+				t.Errorf("error = %v, want %v", err, tc.want)
+			}
+		})
+	}
+}
+
+// TestBuildUtilityBillBarcode_AmountBoundaries mirrors the bank slip
+// boundary test against the wider 11-digit collection value field.
+func TestBuildUtilityBillBarcode_AmountBoundaries(t *testing.T) {
+	const freeField = "12345678901234567890123456789"
+	for _, amount := range []int64{0, maxUtilityBillAmountCents} {
+		barcode, err := BuildUtilityBillBarcode('3', '8', amount, freeField)
+		if err != nil {
+			t.Fatalf("BuildUtilityBillBarcode(amount=%d) error = %v", amount, err)
+		}
+		b, err := Parse(barcode)
+		if err != nil {
+			t.Fatalf("Parse error = %v", err)
+		}
+		if b.AmountCents != amount {
+			t.Errorf("AmountCents = %d, want %d", b.AmountCents, amount)
+		}
+	}
+}
+
+// TestBuildUtilityBillBarcode_AllSegments checks every segment the builder
+// accepts actually produces a parseable document, rather than only the one
+// the other tests happen to use.
+func TestBuildUtilityBillBarcode_AllSegments(t *testing.T) {
+	for segment := byte('1'); segment <= '9'; segment++ {
+		barcode, err := BuildUtilityBillBarcode(segment, '6', 1000, "12345678901234567890123456789")
+		if err != nil {
+			t.Fatalf("segment %c: %v", segment, err)
+		}
+		if _, err := Parse(barcode); err != nil {
+			t.Errorf("segment %c: Parse error = %v", segment, err)
+		}
 	}
 }

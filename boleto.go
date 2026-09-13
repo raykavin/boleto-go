@@ -26,7 +26,7 @@ const (
 	// referência") then determines whether the check digits use mod10 or
 	// mod11 and whether the value field holds centavos or a quantity of
 	// reference currency; both mod10 and mod11 are validated, while the
-	// quantity-of-currency variants are refused see
+	// quantity-of-currency variants are refused. See
 	// ErrUnsupportedUtilityBillVariant and collectionCheckDigit.
 	KindUtilityBill
 )
@@ -71,7 +71,8 @@ var (
 	// digits long.
 	ErrInvalidLength = errors.New("invalid barcode or digitable line length")
 	// ErrNonNumeric is returned when the input contains anything besides
-	// digits (and, for a linha digitável, the conventional '.', ' ' separators).
+	// digits and the conventional '.', ' ', '-' separators a linha digitável
+	// is typeset with.
 	ErrNonNumeric = errors.New("barcode or digitable line must contain only digits")
 	// ErrInvalidFieldCheckDigit is returned when a linha digitável field
 	// check digit doesn't match its field: one of a bank slip's three
@@ -102,7 +103,10 @@ type Boleto struct {
 // Parse validates a 44-digit barcode or a 47/48-digit digitable line.
 // It normalizes separators and extracts the encoded due date and amount.
 func Parse(input string) (*Boleto, error) {
-	digits := onlyDigits(input)
+	digits, ok := onlyDigits(input)
+	if !ok {
+		return nil, ErrNonNumeric
+	}
 	if digits == "" {
 		return nil, ErrEmptyInput
 	}
@@ -127,11 +131,13 @@ func Parse(input string) (*Boleto, error) {
 	}
 }
 
-// onlyDigits strips every non-digit rune (the '.', ' ' conventionally used
-// to typeset a linha digitável for humans) and reports ErrNonNumeric via the
-// caller if anything else remains letters, symbols, etc. never silently
-// disappear.
-func onlyDigits(input string) string {
+// onlyDigits strips the '.', ' ' and '-' conventionally used to typeset a
+// linha digitável for humans, and reports whether the input consisted of
+// nothing else. Anything further, such as a letter, a symbol or stray
+// punctuation, makes it return false, so Parse can answer ErrNonNumeric
+// rather than silently discarding the offending rune. An all-separator input is not an error
+// here: it yields ("", true), which Parse reports as ErrEmptyInput.
+func onlyDigits(input string) (string, bool) {
 	var sb strings.Builder
 	for _, r := range input {
 		switch {
@@ -140,10 +146,10 @@ func onlyDigits(input string) string {
 		case r == '.' || r == ' ' || r == '-':
 			continue
 		default:
-			return ""
+			return "", false
 		}
 	}
-	return sb.String()
+	return sb.String(), true
 }
 
 // parseBarcode validates and decodes an already-normalized 44-digit barcode.

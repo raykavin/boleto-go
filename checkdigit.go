@@ -28,12 +28,14 @@ func mod10(digits string) byte {
 }
 
 // mod11 computes the FEBRABAN "módulo 11" general check digit used by a
-// bank slip barcode (and the mod11 variant of a utility bill, not
-// implemented by this package): walking right to left, digits are
+// bank slip barcode: walking right to left, digits are
 // multiplied by cyclically repeating weights 2..9, summed, and reduced mod
 // 11. A remainder of 0 or 1 maps to check digit 1 (avoiding the invalid,
 // two-digit results 11-0=11 and 11-1=10); any other remainder maps to
 // 11 - remainder.
+//
+// A collection document's módulo 11 is a different mapping; see
+// mod11Collection, which must not be conflated with this one.
 func mod11(digits string) byte {
 	sum := 0
 	weight := 2
@@ -58,9 +60,9 @@ func mod11(digits string) byte {
 //
 // The weighting is the same cyclic 2..9 as mod11, but the remainder maps
 // differently: here a remainder of 0 or 1 yields check digit 0, where a
-// bank slip yields 1. The difference is real and not academic the GPS
+// bank slip yields 1. The difference is real and not academic: the GPS
 // guide that exposed this carries a field whose remainder is 0 and whose
-// printed digit is 0 so mod11 cannot be reused for a collection document.
+// printed digit is 0, so mod11 cannot be reused for a collection document.
 func mod11Collection(digits string) byte {
 	sum := 0
 	weight := 2
@@ -77,9 +79,10 @@ func mod11Collection(digits string) byte {
 	return '0'
 }
 
-// collectionCheckDigit returns the check digit rule a collection document's
-// "identificador de valor efetivo ou referência" selects barcode position
-// 3 (0-indexed 2) and whether this package supports that variant.
+// collectionCheckDigit returns the check digit rule selected by a collection
+// document's "identificador de valor efetivo ou referência" (barcode
+// position 3, 0-indexed 2), and reports whether this package supports that
+// variant.
 //
 // FEBRABAN's table pairs the four values like this:
 //
@@ -90,9 +93,9 @@ func mod11Collection(digits string) byte {
 //
 // The módulo is chosen by 6/7 against 8/9, not by 6/8 against 7/9. This
 // package had the table the wrong way round, which made it validate every
-// módulo 11 document a large share of the tax and social security guides
-// it exists to read with módulo 10, and report the mismatch as a
-// malformed check digit.
+// módulo 11 document (a large share of the tax and social security guides
+// it exists to read) with módulo 10, and report the mismatch as a malformed
+// check digit.
 //
 // The two "quantidade de moeda" variants stay unsupported: their value
 // field counts units of a reference currency rather than centavos, and
