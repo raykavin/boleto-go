@@ -27,11 +27,8 @@ banco, registradora nem qualquer serviço de rede.
 
 ## Requisitos
 
-Go 1.26 ou superior.
-
-> **Atenção:** este repositório ainda não possui um `go.mod`. Hoje ele compila
-> como pacote dentro de um módulo pai. Para consumi-lo como módulo independente,
-> rode antes `go mod init github.com/raykavin/boleto-go`.
+Go 1.21 ou superior. O pacote usa apenas a biblioteca padrão, e nada além de
+`errors`, `strconv`, `strings` e `time`.
 
 ## Instalação
 
